@@ -56,7 +56,7 @@ def ctx(tmp_path: Path) -> Path:
 
 @pytest.fixture()
 def task(ctx: Path) -> PublicTask:
-    return make_task(ctx)
+    return make_task(ctx, Path)
 
 
 @pytest.fixture()
