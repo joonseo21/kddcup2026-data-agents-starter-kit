@@ -27,6 +27,7 @@ docs/
 evaluation/
 artifacts/*
 !artifacts/.gitkeep
+*.pdf
 
 # Local configs
 configs/*
@@ -35,6 +36,3 @@ configs/*
 # OS / notebook noise
 .DS_Store
 .ipynb_checkpoints/
-
-# data
-/data
