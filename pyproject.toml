@@ -29,6 +29,9 @@ dev = [
     "pytest>=8.3.5",
     "ruff>=0.11.0",
 ]
+embedding = [
+    "sentence-transformers>=3.0.0",
+]
 
 [project.scripts]
 dabench = "data_agent_baseline.cli:main"
