@@ -16,6 +16,10 @@ class RecordScanOp:
         self.condition = condition
 
     def execute(self, llm_fn: Callable[[str], str]) -> list[dict]:
+        # Empty condition means no filtering — return all records as-is.
+        if not self.condition:
+            return list(self.records)
+
         prompt = (
             f'Parse the filter condition into JSON.\n'
             f'Condition: "{self.condition}"\n'
