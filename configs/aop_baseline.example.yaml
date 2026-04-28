@@ -1,0 +1,15 @@
+dataset:
+  root_path: data/public/input
+
+agent:
+  model: ${MODEL_NAME}
+  api_base: ${MODEL_API_URL}
+  api_key: ${MODEL_API_KEY}
+  max_steps: 16
+  temperature: 0.0
+  agent_type: aop
+
+run:
+  output_dir: artifacts/runs
+  max_workers: 4
+  task_timeout_seconds: 600

@@ -55,6 +55,14 @@ def _path_value(raw_value: str | None, default_value: Path) -> Path:
     return (PROJECT_ROOT / candidate).resolve()
 
 
+def _expand_env(value: str) -> str:
+    """${VAR} 또는 $VAR 형식의 환경변수를 실제 값으로 치환."""
+    import os, re
+    return re.sub(r'\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)',
+                  lambda m: os.environ.get(m.group(1) or m.group(2), m.group(0)),
+                  value)
+
+
 def load_app_config(config_path: Path) -> AppConfig:
     payload = yaml.safe_load(config_path.read_text()) or {}
     dataset_defaults = DatasetConfig()
@@ -69,9 +77,9 @@ def load_app_config(config_path: Path) -> AppConfig:
         root_path=_path_value(dataset_payload.get("root_path"), dataset_defaults.root_path),
     )
     agent_config = AgentConfig(
-        model=str(agent_payload.get("model", agent_defaults.model)),
-        api_base=str(agent_payload.get("api_base", agent_defaults.api_base)),
-        api_key=str(agent_payload.get("api_key", agent_defaults.api_key)),
+        model=_expand_env(str(agent_payload.get("model", agent_defaults.model))),
+        api_base=_expand_env(str(agent_payload.get("api_base", agent_defaults.api_base))),
+        api_key=_expand_env(str(agent_payload.get("api_key", agent_defaults.api_key))),
         max_steps=int(agent_payload.get("max_steps", agent_defaults.max_steps)),
         temperature=float(agent_payload.get("temperature", agent_defaults.temperature)),
         agent_type=str(agent_payload.get("agent_type", agent_defaults.agent_type)),
