@@ -1,8 +1,11 @@
 """SemanticPlanner: 자연어 쿼리를 DagNode 실행 계획으로 변환."""
 
 import json
+import logging
 import re
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 from .bm25_matcher import BM25Matcher
 from .dag_executor import DagNode
@@ -65,8 +68,11 @@ class SemanticPlanner:
         """
         tables = list(all_records_data.keys())
         prompt = self._build_prompt(query, tables, term_context)
+        logger.debug("[PLANNER] prompt (%d chars):\n%s", len(prompt), prompt)
         response = llm_fn(prompt)
+        logger.debug("[PLANNER] llm_response:\n%s", response)
         steps = self._parse_plan(response)
+        logger.info("[PLANNER] parsed steps: %s", [s["op"] for s in steps])
         return self._steps_to_dag(steps, all_records_data)
 
     def _build_prompt(self, query: str, tables: list[str], term_context: TermContext | None = None) -> str:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import multiprocessing
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -36,6 +37,19 @@ class TaskRunArtifacts:
             "succeeded": self.succeeded,
             "failure_reason": self.failure_reason,
         }
+
+
+def setup_run_logging(run_output_dir: Path) -> None:
+    """파일(run.log) + 콘솔에 INFO, 경쟁 환경 /logs 디렉터리에도 기록."""
+    fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    handlers: list[logging.Handler] = [
+        logging.FileHandler(run_output_dir / "run.log", encoding="utf-8"),
+        logging.StreamHandler(),
+    ]
+    logs_dir = Path("/logs")
+    if logs_dir.is_dir():
+        handlers.append(logging.FileHandler(logs_dir / "agent.log", encoding="utf-8"))
+    logging.basicConfig(level=logging.INFO, format=fmt, handlers=handlers, force=True)
 
 
 def create_run_id() -> str:
@@ -234,6 +248,8 @@ def run_benchmark(
     progress_callback: Callable[[TaskRunArtifacts], None] | None = None,
 ) -> tuple[Path, list[TaskRunArtifacts]]:
     effective_run_id, run_output_dir = create_run_output_dir(config.run.output_dir, run_id=config.run.run_id)
+    setup_run_logging(run_output_dir)
+    logging.getLogger(__name__).info("run_id=%s agent_type=%s", effective_run_id, config.agent.agent_type)
 
     dataset = DABenchPublicDataset(config.dataset.root_path)
     tasks = dataset.iter_tasks()
