@@ -28,6 +28,7 @@ class AgentConfig:
     api_key: str = ""
     max_steps: int = 16
     temperature: float = 0.0
+    agent_type: str = "react"
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +74,7 @@ def load_app_config(config_path: Path) -> AppConfig:
         api_key=str(agent_payload.get("api_key", agent_defaults.api_key)),
         max_steps=int(agent_payload.get("max_steps", agent_defaults.max_steps)),
         temperature=float(agent_payload.get("temperature", agent_defaults.temperature)),
+        agent_type=str(agent_payload.get("agent_type", agent_defaults.agent_type)),
     )
     raw_run_id = run_payload.get("run_id")
     run_id = run_defaults.run_id

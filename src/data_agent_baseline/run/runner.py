@@ -61,6 +61,20 @@ def create_run_output_dir(output_root: Path, *, run_id: str | None = None) -> tu
     return effective_run_id, run_output_dir
 
 
+def build_aop_agent(config: AppConfig, model=None):
+    from data_agent_baseline.agents.aop_agent import AOPAgent, AOPAgentConfig
+    from data_agent_baseline.aop.logical_representations import (
+        RECORD_FILTER_LR, JOIN_SIMPLE_LR, EXTRACT_LR,
+        COUNT_LR, COUNT_DISTINCT_LR, GROUPBY_SUM_LR,
+    )
+    lrs = [RECORD_FILTER_LR, JOIN_SIMPLE_LR, EXTRACT_LR, COUNT_LR, COUNT_DISTINCT_LR, GROUPBY_SUM_LR]
+    return AOPAgent(
+        model=model or build_model_adapter(config),
+        lrs=lrs,
+        config=AOPAgentConfig(max_steps=config.agent.max_steps),
+    )
+
+
 def build_model_adapter(config: AppConfig):
     return OpenAIModelAdapter(
         model=config.agent.model,
@@ -103,11 +117,14 @@ def _run_single_task_core(
     public_dataset = DABenchPublicDataset(config.dataset.root_path)
     task = public_dataset.get_task(task_id)
 
-    agent = ReActAgent(
-        model=model or build_model_adapter(config),
-        tools=tools or create_default_tool_registry(),
-        config=ReActAgentConfig(max_steps=config.agent.max_steps),
-    )
+    if config.agent.agent_type == "aop":
+        agent = build_aop_agent(config, model=model)
+    else:
+        agent = ReActAgent(
+            model=model or build_model_adapter(config),
+            tools=tools or create_default_tool_registry(),
+            config=ReActAgentConfig(max_steps=config.agent.max_steps),
+        )
     run_result = agent.run(task)
     return run_result.to_dict()
 
