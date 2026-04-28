@@ -11,6 +11,7 @@ import pytest
 from data_agent_baseline.aop.planner import SemanticPlanner
 from data_agent_baseline.aop.dag_executor import DagNode, DagExecutor
 from data_agent_baseline.aop.embedding import MockEmbedder
+from data_agent_baseline.aop.operators.link import TermContext
 from data_agent_baseline.aop.logical_representations import (
     RECORD_FILTER_LR, JOIN_SIMPLE_LR, EXTRACT_LR, COUNT_LR, GROUPBY_SUM_LR,
 )
@@ -65,6 +66,36 @@ class TestBuildPrompt:
         prompt = planner._build_prompt("list patients", list(sample_records.keys()))
         assert "Examination.json" in prompt
         assert "Patient.json" in prompt
+
+    def test_prompt_includes_knowledge_when_term_context_given(self, planner, sample_records):
+        ctx = TermContext(knowledge="Thrombosis: 1=mild, 2=severe", columns={})
+        prompt = planner._build_prompt("list patients", list(sample_records.keys()), ctx)
+        assert "Thrombosis" in prompt
+        assert "Knowledge" in prompt
+
+    def test_prompt_includes_columns_when_term_context_given(self, planner, sample_records):
+        ctx = TermContext(knowledge="", columns={"patients.csv": ["ID", "SEX"]})
+        prompt = planner._build_prompt("list patients", list(sample_records.keys()), ctx)
+        assert "patients.csv" in prompt
+        assert "ID" in prompt
+
+    def test_prompt_no_context_section_when_term_context_none(self, planner, sample_records):
+        prompt = planner._build_prompt("list patients", list(sample_records.keys()), None)
+        assert "Knowledge" not in prompt
+        assert "Available Columns" not in prompt
+
+    def test_plan_passes_term_context_to_prompt(self, planner, sample_records):
+        ctx = TermContext(knowledge="domain knowledge here", columns={})
+        captured = []
+
+        def capturing_llm(prompt):
+            captured.append(prompt)
+            return json.dumps([
+                {"op": "RecordScan", "params": {"table": "Examination.json", "condition": ""}},
+            ])
+
+        planner.plan("list all", sample_records, capturing_llm, term_context=ctx)
+        assert "domain knowledge here" in captured[0]
 
 
 # ---------------------------------------------------------------------------

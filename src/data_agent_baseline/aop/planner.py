@@ -4,14 +4,15 @@ import json
 import re
 from typing import Callable
 
-from .bq_matcher import BQMatcher
+from .bm25_matcher import BM25Matcher
 from .dag_executor import DagNode
+from .operators.link import TermContext
 
 
 PLAN_PROMPT_TEMPLATE = """\
 You are a data pipeline planner. Given a question and available tables, \
 output a JSON execution plan.
-
+{context}
 Available tables: {tables}
 
 Question: {query}
@@ -46,14 +47,15 @@ class SemanticPlanner:
         embedder: 임베딩 모델 (BQMatcher에 전달)
     """
 
-    def __init__(self, lrs: list[dict], embedder) -> None:
-        self._matcher = BQMatcher(lrs, embedder)
+    def __init__(self, lrs: list[dict], embedder=None) -> None:
+        self._matcher = BM25Matcher(lrs)
 
     def plan(
         self,
         query: str,
         all_records_data: dict[str, list[dict]],
         llm_fn: Callable[[str], str],
+        term_context: TermContext | None = None,
     ) -> DagNode:
         """
         쿼리를 분석해 실행 가능한 DagNode 트리 반환.
@@ -62,14 +64,20 @@ class SemanticPlanner:
             ValueError: LLM 응답이 파싱 불가하거나 steps가 비어있을 때
         """
         tables = list(all_records_data.keys())
-        prompt = self._build_prompt(query, tables)
+        prompt = self._build_prompt(query, tables, term_context)
         response = llm_fn(prompt)
         steps = self._parse_plan(response)
         return self._steps_to_dag(steps, all_records_data)
 
-    def _build_prompt(self, query: str, tables: list[str]) -> str:
+    def _build_prompt(self, query: str, tables: list[str], term_context: TermContext | None = None) -> str:
         """LLM에게 전달할 계획 요청 프롬프트 생성."""
+        if term_context:
+            ctx_str = term_context.as_context_string()
+            context_block = f"\n{ctx_str}\n" if ctx_str else ""
+        else:
+            context_block = ""
         return PLAN_PROMPT_TEMPLATE.format(
+            context=context_block,
             tables=", ".join(tables),
             query=query,
         )
