@@ -230,6 +230,7 @@ def run_single_task(
     model=None,
     tools: ToolRegistry | None = None,
 ) -> TaskRunArtifacts:
+    setup_run_logging(run_output_dir)
     started_at = perf_counter()
     if model is None and tools is None:
         run_result = _run_single_task_with_timeout(task_id=task_id, config=config)
