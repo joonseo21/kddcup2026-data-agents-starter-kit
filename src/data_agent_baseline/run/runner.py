@@ -39,16 +39,23 @@ class TaskRunArtifacts:
         }
 
 
+def _make_file_handler(path: Path) -> logging.FileHandler:
+    """line-buffered 파일 핸들러 — SIGKILL에도 직전 로그까지 보존."""
+    h = logging.FileHandler(path, encoding="utf-8", delay=False)
+    h.stream = open(path, "a", encoding="utf-8", buffering=1)  # line-buffered
+    return h
+
+
 def setup_run_logging(run_output_dir: Path) -> None:
     """파일(run.log) + 콘솔에 INFO, 경쟁 환경 /logs 디렉터리에도 기록."""
     fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     handlers: list[logging.Handler] = [
-        logging.FileHandler(run_output_dir / "run.log", encoding="utf-8"),
+        _make_file_handler(run_output_dir / "run.log"),
         logging.StreamHandler(),
     ]
     logs_dir = Path("/logs")
     if logs_dir.is_dir():
-        handlers.append(logging.FileHandler(logs_dir / "agent.log", encoding="utf-8"))
+        handlers.append(_make_file_handler(logs_dir / "agent.log"))
     logging.basicConfig(level=logging.INFO, format=fmt, handlers=handlers, force=True)
 
 
@@ -143,7 +150,8 @@ def _run_single_task_core(
     return run_result.to_dict()
 
 
-def _run_single_task_in_subprocess(task_id: str, config: AppConfig, queue: multiprocessing.Queue[Any]) -> None:
+def _run_single_task_in_subprocess(task_id: str, config: AppConfig, queue: multiprocessing.Queue[Any], run_output_dir: Path) -> None:
+    setup_run_logging(run_output_dir)
     try:
         queue.put(
             {
@@ -160,7 +168,7 @@ def _run_single_task_in_subprocess(task_id: str, config: AppConfig, queue: multi
         )
 
 
-def _run_single_task_with_timeout(*, task_id: str, config: AppConfig) -> dict[str, Any]:
+def _run_single_task_with_timeout(*, task_id: str, config: AppConfig, run_output_dir: Path) -> dict[str, Any]:
     timeout_seconds = config.run.task_timeout_seconds
     if timeout_seconds <= 0:
         return _run_single_task_core(task_id=task_id, config=config)
@@ -168,7 +176,7 @@ def _run_single_task_with_timeout(*, task_id: str, config: AppConfig) -> dict[st
     queue: multiprocessing.Queue[Any] = multiprocessing.Queue()
     process = multiprocessing.Process(
         target=_run_single_task_in_subprocess,
-        args=(task_id, config, queue),
+        args=(task_id, config, queue, run_output_dir),
     )
     process.start()
     process.join(timeout_seconds)
@@ -233,7 +241,7 @@ def run_single_task(
     setup_run_logging(run_output_dir)
     started_at = perf_counter()
     if model is None and tools is None:
-        run_result = _run_single_task_with_timeout(task_id=task_id, config=config)
+        run_result = _run_single_task_with_timeout(task_id=task_id, config=config, run_output_dir=run_output_dir)
     else:
         run_result = _run_single_task_core(task_id=task_id, config=config, model=model, tools=tools)
     run_result["e2e_elapsed_seconds"] = round(perf_counter() - started_at, 3)
