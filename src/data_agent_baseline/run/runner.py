@@ -169,19 +169,24 @@ def _run_single_task_in_subprocess(task_id: str, config: AppConfig, queue: multi
 
 
 def _run_single_task_with_timeout(*, task_id: str, config: AppConfig, run_output_dir: Path) -> dict[str, Any]:
+    import queue as _queue_mod
+
     timeout_seconds = config.run.task_timeout_seconds
     if timeout_seconds <= 0:
         return _run_single_task_core(task_id=task_id, config=config)
 
-    queue: multiprocessing.Queue[Any] = multiprocessing.Queue()
+    q: multiprocessing.Queue[Any] = multiprocessing.Queue()
     process = multiprocessing.Process(
         target=_run_single_task_in_subprocess,
-        args=(task_id, config, queue, run_output_dir),
+        args=(task_id, config, q, run_output_dir),
     )
     process.start()
-    process.join(timeout_seconds)
 
-    if process.is_alive():
+    # Read from queue BEFORE joining — avoids OS pipe buffer deadlock when
+    # the subprocess puts a large result that fills the pipe and can't exit.
+    try:
+        result = q.get(timeout=timeout_seconds)
+    except _queue_mod.Empty:
         process.terminate()
         process.join(timeout=1.0)
         if process.is_alive():
@@ -189,16 +194,11 @@ def _run_single_task_with_timeout(*, task_id: str, config: AppConfig, run_output
             process.join()
         return _failure_run_result_payload(task_id, f"Task timed out after {timeout_seconds} seconds.")
 
-    if queue.empty():
-        exit_code = process.exitcode
-        if exit_code not in (None, 0):
-            return _failure_run_result_payload(
-                task_id,
-                f"Task exited unexpectedly with exit code {exit_code}.",
-            )
-        return _failure_run_result_payload(task_id, "Task exited without returning a result.")
+    process.join(timeout=5.0)
+    if process.is_alive():
+        process.kill()
+        process.join()
 
-    result = queue.get()
     if result.get("ok"):
         return dict(result["run_result"])
     return _failure_run_result_payload(task_id, f"Task failed with uncaught error: {result['error']}")
