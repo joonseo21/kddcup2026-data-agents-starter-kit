@@ -1,5 +1,7 @@
 """AOPAgent 단위 테스트. ScriptedModelAdapter로 LLM 없이 검증."""
 import json
+import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -8,10 +10,10 @@ from data_agent_baseline.agents.model import ScriptedModelAdapter
 from data_agent_baseline.agents.runtime import AgentRunResult
 from data_agent_baseline.benchmark.schema import AnswerTable
 from data_agent_baseline.aop.logical_representations import (
-    RECORD_FILTER_LR, JOIN_SIMPLE_LR, EXTRACT_LR, COUNT_LR, GROUPBY_SUM_LR,
+    RECORD_FILTER_LR, JOIN_SIMPLE_LR, EXTRACT_LR, COUNT_LR, GROUPBY_SUM_LR, SQLITE_FILTER_LR,
 )
 
-ALL_LRS = [RECORD_FILTER_LR, JOIN_SIMPLE_LR, EXTRACT_LR, COUNT_LR, GROUPBY_SUM_LR]
+ALL_LRS = [RECORD_FILTER_LR, JOIN_SIMPLE_LR, EXTRACT_LR, COUNT_LR, GROUPBY_SUM_LR, SQLITE_FILTER_LR]
 
 
 # ──────────────────────────────────────────
@@ -167,3 +169,66 @@ class TestAOPAgentFailure:
         task = make_task(tmp_path, "Any question")
         result = agent.run(task)
         assert result.task_id == "task_test"
+
+
+# ──────────────────────────────────────────
+# AOPAgent.run — SQLite source pipeline
+# ──────────────────────────────────────────
+
+def _make_sqlite_task(tmp_path, question: str, rows: list[dict]):
+    """Task with a SQLite file in context/db/."""
+    from unittest.mock import MagicMock
+    db_dir = tmp_path / "context" / "db"
+    db_dir.mkdir(parents=True)
+    db_path = db_dir / "results.db"
+    cols = list(rows[0].keys())
+    col_defs = ", ".join(f"{c} TEXT" for c in cols)
+    placeholders = ", ".join("?" for _ in cols)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(f"CREATE TABLE results ({col_defs})")
+        conn.executemany(
+            f"INSERT INTO results VALUES ({placeholders})",
+            [[r[c] for c in cols] for r in rows],
+        )
+        conn.commit()
+
+    task = MagicMock()
+    task.task_id = "task_sqlite_test"
+    task.question = question
+    task.task_dir = tmp_path
+    return task
+
+
+class TestAOPAgentSqlite:
+    def test_sqlite_task_succeeds(self, tmp_path):
+        rows = [{"id": str(i), "score": str(i * 10)} for i in range(1, 6)]
+        task = _make_sqlite_task(tmp_path, "Find records with high score", rows)
+
+        # Scripted responses: 1 = planner (SqliteFilter plan), 2 = WHERE clause from SqliteFilterOp
+        plan = json.dumps([
+            {"op": "SqliteFilter", "params": {"table": "results.db::results", "condition": "score > 30"}},
+        ])
+        model = ScriptedModelAdapter(responses=[plan, "CAST(score AS INTEGER) > 30"])
+        agent = AOPAgent(model=model, lrs=ALL_LRS)
+
+        result = agent.run(task)
+
+        assert result.succeeded
+        assert result.answer is not None
+        assert len(result.answer.rows) == 2  # score 40, 50
+
+    def test_sqlite_sources_logged(self, tmp_path, caplog):
+        import logging
+        rows = [{"id": "1", "val": "A"}]
+        task = _make_sqlite_task(tmp_path, "list all", rows)
+
+        plan = json.dumps([
+            {"op": "SqliteFilter", "params": {"table": "results.db::results", "condition": ""}},
+        ])
+        model = ScriptedModelAdapter(responses=[plan, ""])
+        agent = AOPAgent(model=model, lrs=ALL_LRS)
+
+        with caplog.at_level(logging.INFO):
+            agent.run(task)
+
+        assert "results.db::results" in caplog.text

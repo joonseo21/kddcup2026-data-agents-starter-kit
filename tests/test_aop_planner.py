@@ -6,6 +6,9 @@ MockEmbedder로 BQMatcher 의존성도 주입.
 """
 
 import json
+import sqlite3
+from pathlib import Path
+
 import pytest
 
 from data_agent_baseline.aop.planner import SemanticPlanner
@@ -129,13 +132,11 @@ class TestParsePlan:
 
 class TestStepsToDag:
     def test_single_count_step(self, planner, sample_records):
-        steps = [{"op": "Count", "params": {"field": None}}]
-        # Count는 prev_node 없이도 동작해야 하므로, 직접 RecordScan 앞에 붙여서 테스트
         scan_steps = [
             {"op": "RecordScan", "params": {"table": "Examination.json", "condition": "Thrombosis equals 2"}},
             {"op": "Count", "params": {"field": None}},
         ]
-        node = planner._steps_to_dag(scan_steps, sample_records)
+        node = planner._steps_to_dag(scan_steps, sample_records, {})
         assert node.op_type == "Count"
         assert node.children[0].op_type == "RecordScan"
 
@@ -144,14 +145,14 @@ class TestStepsToDag:
             {"op": "RecordScan", "params": {"table": "Examination.json", "condition": "Thrombosis equals 2"}},
             {"op": "Extract", "params": {"columns": ["ID", "Diagnosis"]}},
         ]
-        node = planner._steps_to_dag(steps, sample_records)
+        node = planner._steps_to_dag(steps, sample_records, {})
         assert node.op_type == "Extract"
         assert node.params["columns"] == ["ID", "Diagnosis"]
         assert node.children[0].op_type == "RecordScan"
 
     def test_empty_steps_raises_value_error(self, planner, sample_records):
         with pytest.raises(ValueError, match="비어있음"):
-            planner._steps_to_dag([], sample_records)
+            planner._steps_to_dag([], sample_records, {})
 
 
 # ---------------------------------------------------------------------------
@@ -229,3 +230,61 @@ class TestPlanCount:
         executor = DagExecutor(llm_fn=mock_record_scan_llm)
         result = executor.execute(node)
         assert result == 2  # Thrombosis=2인 레코드 2개
+
+
+# ---------------------------------------------------------------------------
+# SqliteFilter 계획 생성
+# ---------------------------------------------------------------------------
+
+def _make_sqlite_db(path: Path, table: str, rows: list[dict]) -> None:
+    cols = list(rows[0].keys())
+    col_defs = ", ".join(f"{c} TEXT" for c in cols)
+    placeholders = ", ".join("?" for _ in cols)
+    with sqlite3.connect(path) as conn:
+        conn.execute(f"CREATE TABLE {table} ({col_defs})")
+        conn.executemany(
+            f"INSERT INTO {table} VALUES ({placeholders})",
+            [[r[c] for c in cols] for r in rows],
+        )
+        conn.commit()
+
+
+class TestSqliteFilterPlan:
+    @pytest.fixture
+    def sqlite_sources(self, tmp_path):
+        db_path = tmp_path / "results.db"
+        _make_sqlite_db(db_path, "results", [
+            {"id": "1", "score": "90"},
+            {"id": "2", "score": "85"},
+        ])
+        return {"results.db::results": (db_path, "results")}
+
+    def test_prompt_contains_sqlite_table_key(self, planner, sqlite_sources):
+        prompt = planner._build_prompt(
+            "find high scores", [], None, list(sqlite_sources.keys())
+        )
+        assert "results.db::results" in prompt
+
+    def test_steps_to_dag_creates_sqlite_filter_node(self, planner, sqlite_sources):
+        steps = [
+            {"op": "SqliteFilter", "params": {"table": "results.db::results", "condition": "score > 90"}},
+        ]
+        node = planner._steps_to_dag(steps, {}, sqlite_sources)
+
+        assert node.op_type == "SqliteFilter"
+        assert node.params["table"] == "results"
+        assert node.params["condition"] == "score > 90"
+
+    def test_plan_with_sqlite_sources_returns_sqlite_filter_node(self, planner, sqlite_sources):
+        plan = [
+            {"op": "SqliteFilter", "params": {"table": "results.db::results", "condition": "score greater than 90"}},
+        ]
+        node = planner.plan("find high scores", {}, make_llm(plan), sqlite_sources=sqlite_sources)
+        assert node.op_type == "SqliteFilter"
+
+    def test_unknown_sqlite_key_raises(self, planner):
+        steps = [
+            {"op": "SqliteFilter", "params": {"table": "nonexistent.db::table", "condition": "x"}},
+        ]
+        with pytest.raises(ValueError, match="Unknown SQLite source"):
+            planner._steps_to_dag(steps, {}, {})

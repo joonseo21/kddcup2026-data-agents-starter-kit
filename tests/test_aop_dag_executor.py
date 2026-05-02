@@ -6,6 +6,8 @@ end-to-end using mock data and a mock llm_fn — no real LLM API calls.
 """
 
 import json
+import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -140,3 +142,66 @@ class TestDagExecutorTask11Pipeline:
         # Each row must have exactly the extracted columns.
         for row in result:
             assert set(row.keys()) == {"ID", "SEX", "Diagnosis"}
+
+
+def _make_db(path: Path, table: str, rows: list[dict]) -> None:
+    cols = list(rows[0].keys())
+    col_defs = ", ".join(f"{c} TEXT" for c in cols)
+    placeholders = ", ".join("?" for _ in cols)
+    with sqlite3.connect(path) as conn:
+        conn.execute(f"CREATE TABLE {table} ({col_defs})")
+        conn.executemany(
+            f"INSERT INTO {table} VALUES ({placeholders})",
+            [[r[c] for c in cols] for r in rows],
+        )
+        conn.commit()
+
+
+class TestDagExecutorSqliteFilter:
+    @pytest.fixture
+    def sample_db(self, tmp_path):
+        db_path = tmp_path / "results.db"
+        _make_db(db_path, "results", [
+            {"id": "1", "sex": "F", "score": "90"},
+            {"id": "2", "sex": "M", "score": "85"},
+            {"id": "3", "sex": "F", "score": "95"},
+        ])
+        return db_path
+
+    def test_sqlite_filter_node_executes(self, sample_db):
+        node = DagNode(
+            op_type="SqliteFilter",
+            params={"db_path": sample_db, "table": "results", "condition": "sex is F"},
+        )
+        executor = DagExecutor(llm_fn=lambda p: "sex = 'F'")
+        result = executor.execute(node)
+
+        assert len(result) == 2
+        assert all(r["sex"] == "F" for r in result)
+
+    def test_sqlite_filter_no_condition_returns_all(self, sample_db):
+        node = DagNode(
+            op_type="SqliteFilter",
+            params={"db_path": sample_db, "table": "results", "condition": ""},
+        )
+        executor = DagExecutor(llm_fn=lambda p: "")
+        result = executor.execute(node)
+
+        assert len(result) == 3
+
+    def test_sqlite_filter_then_extract(self, sample_db):
+        filter_node = DagNode(
+            op_type="SqliteFilter",
+            params={"db_path": sample_db, "table": "results", "condition": "sex is F"},
+        )
+        extract_node = DagNode(
+            op_type="Extract",
+            params={"columns": ["id", "score"]},
+            children=[filter_node],
+        )
+        executor = DagExecutor(llm_fn=lambda p: "sex = 'F'")
+        result = executor.execute(extract_node)
+
+        assert len(result) == 2
+        for row in result:
+            assert set(row.keys()) == {"id", "score"}

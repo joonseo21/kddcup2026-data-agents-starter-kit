@@ -7,11 +7,12 @@ from .operators.extract_op import ExtractOp
 from .operators.count_op import CountOp
 from .operators.groupby_op import GroupByOp
 from .operators.sum_op import SumOp
+from .operators.sqlite_filter import SqliteFilterOp
 
 
 @dataclass
 class DagNode:
-    op_type: str  # "RecordScan" | "Join" | "Extract" | "Count" | "GroupBy" | "Sum"
+    op_type: str  # "RecordScan" | "SqliteFilter" | "Join" | "Extract" | "Count" | "GroupBy" | "Sum"
     params: dict
     children: list["DagNode"] = field(default_factory=list)
 
@@ -35,6 +36,13 @@ class DagExecutor:
                 records = node.params["records"]
                 condition = node.params["condition"]
                 return RecordScanOp(records, condition).execute(self.llm_fn)
+
+            case "SqliteFilter":
+                return SqliteFilterOp(
+                    db_path=node.params["db_path"],
+                    table=node.params["table"],
+                    condition=node.params["condition"],
+                ).execute(self.llm_fn)
 
             case "Join":
                 left = child_results[0]

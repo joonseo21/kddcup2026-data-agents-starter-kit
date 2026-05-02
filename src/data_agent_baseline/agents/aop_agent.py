@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 from data_agent_baseline.agents.model import ModelAdapter, ModelMessage
 from data_agent_baseline.agents.runtime import AgentRunResult, StepRecord
 from data_agent_baseline.benchmark.schema import AnswerTable, PublicTask
-from data_agent_baseline.aop.data_loader import load_records
+from data_agent_baseline.aop.data_loader import load_records, load_sqlite_sources
 from data_agent_baseline.aop.dag_executor import DagExecutor
 from data_agent_baseline.aop.operators.link import LinkOperator
 from data_agent_baseline.aop.planner import SemanticPlanner
@@ -53,10 +53,11 @@ class AOPAgent:
                         tid, len(term_context.knowledge), list(term_context.columns.keys()))
             steps.append(_make_step(0, "link", {"task_dir": str(task.task_dir)}, term_context.as_context_string()))
 
-            # Step 2: Load data records (handles both flat and subdirectory layouts)
+            # Step 2: Load data records + SQLite source paths
             context_dir = task.task_dir / "context"
-            all_records = _load_all_records(context_dir)
-            logger.info("[%s] DATA tables=%s", tid, {k: len(v) for k, v in all_records.items()})
+            all_records, sqlite_sources = _collect_sources(context_dir)
+            logger.info("[%s] DATA tables=%s sqlite=%s",
+                        tid, {k: len(v) for k, v in all_records.items()}, list(sqlite_sources.keys()))
 
             # Step 3: Plan — build DAG from query
             dag = self._planner.plan(
@@ -64,6 +65,7 @@ class AOPAgent:
                 all_records_data=all_records,
                 llm_fn=llm_fn,
                 term_context=term_context,
+                sqlite_sources=sqlite_sources,
             )
             logger.info("[%s] PLAN dag_root=%s", tid, dag.op_type)
             steps.append(_make_step(1, "plan", {"query": task.question}, repr(dag)))
@@ -98,20 +100,23 @@ class AOPAgent:
         )
 
 
-def _load_all_records(context_dir) -> dict:
-    """Load records from context_dir, supporting both flat and csv/json/db subdirectory layouts."""
+def _collect_sources(context_dir) -> tuple[dict, dict]:
+    """Return (all_records, sqlite_sources), supporting flat and subdirectory layouts."""
     from pathlib import Path
     context_dir = Path(context_dir)
     if not context_dir.exists():
-        return {}
-    merged: dict = {}
+        return {}, {}
+    all_records: dict = {}
+    sqlite_srcs: dict = {}
     for subdir in ("csv", "json", "db"):
         sub = context_dir / subdir
         if sub.is_dir():
-            merged.update(load_records(sub))
-    if not merged:
-        merged = load_records(context_dir)
-    return merged
+            all_records.update(load_records(sub))
+            sqlite_srcs.update(load_sqlite_sources(sub))
+    if not all_records and not sqlite_srcs:
+        all_records = load_records(context_dir)
+        sqlite_srcs = load_sqlite_sources(context_dir)
+    return all_records, sqlite_srcs
 
 
 def _make_step(index: int, action: str, action_input: dict, observation: str) -> StepRecord:

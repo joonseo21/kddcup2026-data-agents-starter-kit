@@ -6,11 +6,11 @@ from pathlib import Path
 
 def load_records(context_dir: str | Path) -> dict[str, list[dict]]:
     """
-    Load all supported files in context_dir into a dict of {key: [records]}.
+    Load CSV and JSON files in context_dir into a dict of {key: [records]}.
 
     CSV  -> {filename: [{"col": val, ...}, ...]}
     JSON -> {filename: [record, ...]}
-    SQLite (.db) -> {"filename::tablename": [record, ...]}
+    SQLite (.db) files are intentionally skipped — use load_sqlite_sources() instead.
     Other extensions (.txt, .md, etc.) are ignored.
     """
     context_dir = Path(context_dir)
@@ -26,8 +26,23 @@ def load_records(context_dir: str | Path) -> dict[str, list[dict]]:
             result[file_path.name] = _load_csv(file_path)
         elif suffix == ".json":
             result[file_path.name] = _load_json(file_path)
-        elif suffix == ".db":
-            result.update(_load_sqlite(file_path))
+
+    return result
+
+
+def load_sqlite_sources(context_dir: str | Path) -> dict[str, tuple[Path, str]]:
+    """
+    Return metadata for all SQLite tables in context_dir without loading data.
+
+    Returns {"filename.db::tablename": (Path, "tablename"), ...}
+    Use SqliteFilterOp to query these tables at execution time.
+    """
+    context_dir = Path(context_dir)
+    result: dict[str, tuple[Path, str]] = {}
+
+    for file_path in sorted(context_dir.iterdir()):
+        if file_path.is_file() and file_path.suffix.lower() == ".db":
+            result.update(_collect_sqlite_sources(file_path))
 
     return result
 
@@ -51,19 +66,11 @@ def _load_json(file_path: Path) -> list[dict]:
     return [data]
 
 
-def _load_sqlite(file_path: Path) -> dict[str, list[dict]]:
-    result: dict[str, list[dict]] = {}
-    conn = sqlite3.connect(file_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-        tables = [row[0] for row in cursor.fetchall()]
-        for table in tables:
-            cursor.execute(f"SELECT * FROM {table}")  # noqa: S608
-            rows = cursor.fetchall()
+def _collect_sqlite_sources(file_path: Path) -> dict[str, tuple[Path, str]]:
+    result: dict[str, tuple[Path, str]] = {}
+    with sqlite3.connect(file_path) as conn:
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        for (table,) in cursor.fetchall():
             key = f"{file_path.name}::{table}"
-            result[key] = [dict(row) for row in rows]
-    finally:
-        conn.close()
+            result[key] = (file_path, table)
     return result

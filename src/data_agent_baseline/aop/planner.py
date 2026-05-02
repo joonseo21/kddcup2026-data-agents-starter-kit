@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Callable
 
 logger = logging.getLogger(__name__)
@@ -16,28 +17,37 @@ PLAN_PROMPT_TEMPLATE = """\
 You are a data pipeline planner. Given a question and available tables, \
 output a JSON execution plan.
 {context}
-Available tables: {tables}
+Available in-memory tables: {tables}
+Available SQLite tables: {sqlite_tables}
 
 Question: {query}
 
 Output ONLY a JSON array of steps. Each step has:
-- "op": one of "RecordScan", "Join", "Extract", "Count", "GroupBy", "Sum"
+- "op": one of "RecordScan", "SqliteFilter", "Join", "Extract", "Count", "GroupBy", "Sum"
 - "params": op-specific parameters (see below)
 - "input": "prev" (use previous step output) or a table name (load directly)
 
 Op params:
-- RecordScan: {{"table": "<table_name>", "condition": "<natural language condition>"}}
-- Join:       {{"left": "prev"|"<table>", "right": "prev"|"<table>", "left_key": "<field>", "right_key": "<field>"}}
-- Extract:    {{"columns": ["<col1>", ...]}}
-- Count:      {{"field": "<field_name>" or null}}
-- GroupBy:    {{"field": "<group_field>", "sum_field": "<sum_field>"}}
-- Sum:        {{"field": "<field>"}}
+- RecordScan:   {{"table": "<in-memory table name>", "condition": "<natural language condition>"}}
+  → Use ONLY for in-memory tables (CSV/JSON)
+- SqliteFilter: {{"table": "<sqlite_table_key>", "condition": "<natural language condition>"}}
+  → Use ONLY for SQLite table keys (e.g. "results.db::results")
+- Join:         {{"left": "prev"|"<table>", "right": "prev"|"<table>", "left_key": "<field>", "right_key": "<field>"}}
+- Extract:      {{"columns": ["<col1>", ...]}}
+- Count:        {{"field": "<field_name>" or null}}
+- GroupBy:      {{"field": "<group_field>", "sum_field": "<sum_field>"}}
+- Sum:          {{"field": "<field>"}}
 
 Example for "For patients with severe thrombosis, list their ID, sex and disease":
 [
   {{"op": "RecordScan", "params": {{"table": "Examination.json", "condition": "Thrombosis equals 2"}}}},
   {{"op": "Join", "params": {{"left": "prev", "right": "Patient.json", "left_key": "ID", "right_key": "ID"}}}},
   {{"op": "Extract", "params": {{"columns": ["ID", "SEX", "Diagnosis"]}}}}
+]
+
+Example for "Find results where score > 90":
+[
+  {{"op": "SqliteFilter", "params": {{"table": "results.db::results", "condition": "score greater than 90"}}}}
 ]"""
 
 
@@ -59,6 +69,7 @@ class SemanticPlanner:
         all_records_data: dict[str, list[dict]],
         llm_fn: Callable[[str], str],
         term_context: TermContext | None = None,
+        sqlite_sources: dict[str, tuple[Path, str]] | None = None,
     ) -> DagNode:
         """
         쿼리를 분석해 실행 가능한 DagNode 트리 반환.
@@ -66,31 +77,40 @@ class SemanticPlanner:
         Raises:
             ValueError: LLM 응답이 파싱 불가하거나 steps가 비어있을 때
         """
+        sqlite_sources = sqlite_sources or {}
         tables = list(all_records_data.keys())
-        prompt = self._build_prompt(query, tables, term_context)
+        sqlite_keys = list(sqlite_sources.keys())
+        prompt = self._build_prompt(query, tables, term_context, sqlite_keys)
         logger.debug("[PLANNER] prompt (%d chars):\n%s", len(prompt), prompt)
         response = llm_fn(prompt)
         logger.debug("[PLANNER] llm_response:\n%s", response)
         steps = self._parse_plan(response)
         logger.info("[PLANNER] parsed steps: %s", [s["op"] for s in steps])
-        return self._steps_to_dag(steps, all_records_data)
+        return self._steps_to_dag(steps, all_records_data, sqlite_sources)
 
-    def _build_prompt(self, query: str, tables: list[str], term_context: TermContext | None = None) -> str:
+    def _build_prompt(
+        self,
+        query: str,
+        tables: list[str],
+        term_context: TermContext | None = None,
+        sqlite_table_keys: list[str] | None = None,
+    ) -> str:
         """LLM에게 전달할 계획 요청 프롬프트 생성."""
         if term_context:
             ctx_str = term_context.as_context_string()
             context_block = f"\n{ctx_str}\n" if ctx_str else ""
         else:
             context_block = ""
+        sqlite_tables_str = ", ".join(sqlite_table_keys) if sqlite_table_keys else "(none)"
         return PLAN_PROMPT_TEMPLATE.format(
             context=context_block,
-            tables=", ".join(tables),
+            tables=", ".join(tables) if tables else "(none)",
+            sqlite_tables=sqlite_tables_str,
             query=query,
         )
 
     def _parse_plan(self, response: str) -> list[dict]:
         """LLM 응답(JSON 배열)을 파싱. 마크다운 코드블록 있으면 제거."""
-        # 마크다운 코드블록 제거 (```json ... ``` 또는 ``` ... ```)
         cleaned = re.sub(r"```(?:json)?\s*", "", response).strip()
         cleaned = cleaned.rstrip("`").strip()
 
@@ -110,6 +130,7 @@ class SemanticPlanner:
         self,
         steps: list[dict],
         all_records_data: dict[str, list[dict]],
+        sqlite_sources: dict[str, tuple[Path, str]],
     ) -> DagNode:
         """
         순차 steps 리스트를 DagNode 트리로 변환.
@@ -129,19 +150,28 @@ class SemanticPlanner:
                     params={"records": records, "condition": params["condition"]},
                 )
 
+            elif op == "SqliteFilter":
+                table_key = params["table"]
+                if table_key not in sqlite_sources:
+                    raise ValueError(
+                        f"Unknown SQLite source: {table_key!r}. Available: {list(sqlite_sources.keys())}"
+                    )
+                db_path, table_name = sqlite_sources[table_key]
+                node = DagNode(
+                    op_type="SqliteFilter",
+                    params={"db_path": db_path, "table": table_name, "condition": params["condition"]},
+                )
+
             elif op == "Join":
                 left_src = params.get("left", "prev")
                 right_src = params.get("right", "")
 
-                # left: "prev"이면 이전 노드, 아니면 테이블 직접 로딩
                 if left_src == "prev" and prev_node is not None:
                     left_node = prev_node
                 else:
-                    left_recs = self._resolve_records(left_src, all_records_data)
-                    left_node = DagNode("RecordScan", {"records": left_recs, "condition": ""})
+                    left_node = self._make_source_node(left_src, all_records_data, sqlite_sources)
 
-                right_recs = self._resolve_records(right_src, all_records_data)
-                right_node = DagNode("RecordScan", {"records": right_recs, "condition": ""})
+                right_node = self._make_source_node(right_src, all_records_data, sqlite_sources)
 
                 node = DagNode(
                     op_type="Join",
@@ -192,6 +222,22 @@ class SemanticPlanner:
 
         return prev_node
 
+    def _make_source_node(
+        self,
+        src: str,
+        all_records_data: dict[str, list[dict]],
+        sqlite_sources: dict[str, tuple[Path, str]],
+    ) -> DagNode:
+        """테이블 소스에 따라 RecordScan 또는 SqliteFilter 노드 생성."""
+        if src in sqlite_sources:
+            db_path, table_name = sqlite_sources[src]
+            return DagNode(
+                op_type="SqliteFilter",
+                params={"db_path": db_path, "table": table_name, "condition": ""},
+            )
+        records = self._resolve_records(src, all_records_data)
+        return DagNode("RecordScan", {"records": records, "condition": ""})
+
     def _resolve_records(
         self, source: str, all_records_data: dict[str, list[dict]]
     ) -> list[dict]:
@@ -204,12 +250,10 @@ class SemanticPlanner:
         if source in all_records_data:
             return all_records_data[source]
 
-        # 확장자 없는 경우: ".json" 붙여서 재시도
         with_json = source + ".json"
         if with_json in all_records_data:
             return all_records_data[with_json]
 
-        # 확장자 있는 경우: 제거 후 재시도
         stem = source.rsplit(".", 1)[0] if "." in source else source
         if stem in all_records_data:
             return all_records_data[stem]
