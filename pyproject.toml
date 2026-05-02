@@ -41,3 +41,4 @@ src = ["src", "tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["integration: live LLM API required; skipped when env vars absent"]
