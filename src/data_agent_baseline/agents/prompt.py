@@ -18,6 +18,8 @@ Rules:
 5. Always return exactly one JSON object with keys `thought`, `action`, and `action_input`.
 6. Always wrap that JSON object in exactly one fenced code block that starts with ```json and ends with ```.
 7. Do not output any text before or after the fenced JSON block.
+8. If the task uses structured `.csv` or `.json` data, prefer running `scan` first to create a SQLite database before using SQL or linking.
+9. Use `retrieve` for markdown documents, and use `link` only after you already have the scanned database path and table name.
 
 Keep reasoning concise and grounded in the observed data.
 """.strip()
@@ -51,6 +53,7 @@ def build_task_prompt(task: PublicTask) -> str:
     return (
         f"Question: {task.question}\n"
         "All tool file paths are relative to the task context directory. "
+        "If you need to analyze structured CSV/JSON data, run `scan` first. "
         "When you have the final table, call the `answer` tool."
     )
 
