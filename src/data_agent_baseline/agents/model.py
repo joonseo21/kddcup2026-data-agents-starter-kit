@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Protocol
-
+import re
 from openai import APIError, OpenAI
 
 
@@ -40,6 +40,19 @@ class OpenAIModelAdapter:
         self.temperature = temperature
 
     def complete(self, messages: list[ModelMessage]) -> str:
+        #/////////
+        '''
+        total_chars = sum(len(m.content) for m in messages)
+        print(f"[DEBUG] 메시지 수: {len(messages)}, 총 글자수: {total_chars}")
+        for m in messages:
+            print(f"[DEBUG] role={m.role}, chars={len(m.content)}")
+            if m.role == "assistant":
+                print(f" assistant 내용 앞 200자: {m.content[:200]}")
+            if m.role == "user" and m.content.startswith("Observation"):
+                print(f" observation 내용: {m.content[:300]}")
+                '''
+        #//////////
+
         if not self.api_key:
             raise RuntimeError("Missing model API key in config.agent.api_key.")
 
@@ -52,7 +65,8 @@ class OpenAIModelAdapter:
             response = client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": message.role, "content": message.content} for message in messages],
-                temperature=self.temperature
+                temperature=self.temperature,
+                #extra_body={"enable_thinking": False},
             )
         except APIError as exc:
             raise RuntimeError(f"Model request failed: {exc}") from exc
@@ -60,7 +74,10 @@ class OpenAIModelAdapter:
         choices = response.choices or []
         if not choices:
             raise RuntimeError("Model response missing choices.")
-        content = choices[0].message.content
+        #content = choices[0].message.content
+        content = choices[0].message.content.encode('utf-8', errors='ignore').decode('utf-8')
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+        print(f"[DEBUG] 응답 원문: {repr(content[:500])}")
         if not isinstance(content, str):
             raise RuntimeError("Model response missing text content.")
         return content

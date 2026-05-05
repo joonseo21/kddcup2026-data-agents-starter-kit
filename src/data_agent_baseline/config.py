@@ -28,6 +28,14 @@ class AgentConfig:
     api_key: str = ""
     max_steps: int = 16
     temperature: float = 0.0
+    #/////////////////////////
+    use_M0Plus: bool = False
+    use_M0PP: bool = False
+    use_operator_forcing: bool = False
+    use_schema_linking: bool = False
+    use_validator: bool = False
+    use_DAG: bool = False
+    #/////////////////////////
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +63,8 @@ def _path_value(raw_value: str | None, default_value: Path) -> Path:
 
 
 def load_app_config(config_path: Path) -> AppConfig:
-    payload = yaml.safe_load(config_path.read_text()) or {}
+    #payload = yaml.safe_load(config_path.read_text()) or {}
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     dataset_defaults = DatasetConfig()
     agent_defaults = AgentConfig()
     run_defaults = RunConfig()
@@ -73,6 +82,11 @@ def load_app_config(config_path: Path) -> AppConfig:
         api_key=str(agent_payload.get("api_key", agent_defaults.api_key)),
         max_steps=int(agent_payload.get("max_steps", agent_defaults.max_steps)),
         temperature=float(agent_payload.get("temperature", agent_defaults.temperature)),
+        use_M0Plus=bool(agent_payload.get("use_M0Plus", agent_defaults.use_M0Plus)),
+        use_M0PP=bool(agent_payload.get("use_M0PP", agent_defaults.use_M0PP)),
+        use_operator_forcing=bool(agent_payload.get("use_operator_forcing", agent_defaults.use_operator_forcing)),
+        use_schema_linking=bool(agent_payload.get("use_schema_linking", agent_defaults.use_schema_linking)),
+        use_validator=bool(agent_payload.get("use_validator", agent_defaults.use_validator)),
     )
     raw_run_id = run_payload.get("run_id")
     run_id = run_defaults.run_id

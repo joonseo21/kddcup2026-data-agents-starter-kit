@@ -71,12 +71,12 @@ def build_model_adapter(config: AppConfig):
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def _write_csv(path: Path, columns: list[str], rows: list[list[Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="") as handle:
+    with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(columns)
         for row in rows:
@@ -106,7 +106,15 @@ def _run_single_task_core(
     agent = ReActAgent(
         model=model or build_model_adapter(config),
         tools=tools or create_default_tool_registry(),
-        config=ReActAgentConfig(max_steps=config.agent.max_steps),
+        config=ReActAgentConfig(
+            max_steps=config.agent.max_steps,
+            use_M0Plus=config.agent.use_M0Plus,
+            use_M0PP=config.agent.use_M0PP,
+            use_operator_forcing=config.agent.use_operator_forcing,
+            use_schema_linking=config.agent.use_schema_linking,
+            use_validator=config.agent.use_validator,
+            use_DAG=config.agent.use_DAG,
+        ),
     )
     run_result = agent.run(task)
     return run_result.to_dict()

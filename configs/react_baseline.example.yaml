@@ -1,22 +1,21 @@
 dataset:
   root_path: data/public/input
 
-# agent:
-#   model: gpt-4-turbo
-#   api_base: https://openai.com
-#   api_key: gpt-5.4-mini
-#   max_steps: 16
-#   temperature: 0.0
-
 agent:
-  model: llama3.1:8b
-  api_base: http://localhost:11434/v1
-  api_key: ollama        # 아무 값이나 OK
+  model: "qwen3.5-35b-a3b"
+  api_base: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+  api_key: ""
   max_steps: 16
   temperature: 0.0
+  use_M0Plus: true
+  use_M0PP: false
+  use_operator_forcing: false
+  use_schema_linking: true
+  use_validator: true
+  use_DAG: true
 
 run:
   output_dir: artifacts/runs
-  run_id: example_run_id
-  max_workers: 8
-  task_timeout_seconds: 600
+  run_id: M42Plus_Validate
+  max_workers: 4
+  task_timeout_seconds: 0

@@ -20,10 +20,12 @@ htmlcov/
 .env
 .env.local
 .env.*.local
+.codex
 
 # Local data, docs, tests, and artifacts
 data/
 docs/
+tests/
 evaluation/
 artifacts/*
 !artifacts/.gitkeep
@@ -35,6 +37,3 @@ configs/*
 # OS / notebook noise
 .DS_Store
 .ipynb_checkpoints/
-
-# data
-/data

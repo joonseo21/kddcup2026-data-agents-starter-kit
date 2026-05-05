@@ -81,6 +81,7 @@ def _execute_python(task: PublicTask, action_input: dict[str, Any]) -> ToolExecu
 
 
 def _answer(_: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
+    print(f"[DEBUG] answer 툴 호출됨: {action_input}")
     columns = action_input.get("columns")
     rows = action_input.get("rows")
     if not isinstance(columns, list) or not columns or not all(isinstance(item, str) for item in columns):
@@ -97,6 +98,7 @@ def _answer(_: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
         normalized_rows.append(list(row))
 
     answer = AnswerTable(columns=list(columns), rows=normalized_rows)
+    print(f"[DEBUG] AnswerTable 생성 완료: {answer}")
     return ToolExecutionResult(
         ok=True,
         content={
