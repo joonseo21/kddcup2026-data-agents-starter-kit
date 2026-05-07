@@ -235,6 +235,14 @@ class SemanticPlanner:
                 op_type="SqliteFilter",
                 params={"db_path": db_path, "table": table_name, "condition": ""},
             )
+        # LLM이 "Patient.json" 처럼 파일명만 쓴 경우, "Patient.json::*" 키로 fallback
+        src_prefix = src.split("::")[0]  # already-qualified keys pass through
+        for key, (db_path, table_name) in sqlite_sources.items():
+            if key.startswith(src_prefix + "::") or key.startswith(src + "::"):
+                return DagNode(
+                    op_type="SqliteFilter",
+                    params={"db_path": db_path, "table": table_name, "condition": ""},
+                )
         records = self._resolve_records(src, all_records_data)
         return DagNode("RecordScan", {"records": records, "condition": ""})
 
