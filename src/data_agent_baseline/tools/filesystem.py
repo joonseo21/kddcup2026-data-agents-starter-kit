@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+from typing import Any
 
 from data_agent_baseline.benchmark.schema import PublicTask
 
@@ -41,23 +42,31 @@ def list_context_tree(task: PublicTask, *, max_depth: int = 4) -> dict[str, obje
         "entries": entries,
     }
 
-
-def read_csv_preview(task: PublicTask, relative_path: str, *, max_rows: int = 20) -> dict[str, object]:
+# CSV 
+def load_csv_rows(task: PublicTask, relative_path: str) -> tuple[list[str], list[list[str]]]:
     path = resolve_context_path(task, relative_path)
-    with path.open(newline="") as handle:
+    with path.open(newline="", encoding="utf-8", errors="replace") as handle:
         reader = csv.reader(handle)
         rows = list(reader)
 
     if not rows:
-        return {
-            "path": relative_path,
-            "columns": [],
-            "rows": [],
-            "row_count": 0,
-        }
+        return [], []
 
-    header = rows[0]
-    data_rows = rows[1:]
+    return list(rows[0]), [list(row) for row in rows[1:]]
+
+
+def load_json_value(task: PublicTask, relative_path: str) -> Any:
+    path = resolve_context_path(task, relative_path)
+    return json.loads(path.read_text(encoding="utf-8", errors="replace"))
+
+
+def load_document_text(task: PublicTask, relative_path: str) -> str:
+    path = resolve_context_path(task, relative_path)
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def read_csv_preview(task: PublicTask, relative_path: str, *, max_rows: int = 20) -> dict[str, object]:
+    header, data_rows = load_csv_rows(task, relative_path)
     return {
         "path": relative_path,
         "columns": header,
@@ -67,8 +76,7 @@ def read_csv_preview(task: PublicTask, relative_path: str, *, max_rows: int = 20
 
 
 def read_json_preview(task: PublicTask, relative_path: str, *, max_chars: int = 4000) -> dict[str, object]:
-    path = resolve_context_path(task, relative_path)
-    payload = json.loads(path.read_text())
+    payload = load_json_value(task, relative_path)
     preview = json.dumps(payload, ensure_ascii=False, indent=2)
     return {
         "path": relative_path,
@@ -78,8 +86,7 @@ def read_json_preview(task: PublicTask, relative_path: str, *, max_chars: int = 
 
 
 def read_doc_preview(task: PublicTask, relative_path: str, *, max_chars: int = 4000) -> dict[str, object]:
-    path = resolve_context_path(task, relative_path)
-    text = path.read_text(errors="replace")
+    text = load_document_text(task, relative_path)
     return {
         "path": relative_path,
         "preview": text[:max_chars],

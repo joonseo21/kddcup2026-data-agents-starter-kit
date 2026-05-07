@@ -11,6 +11,9 @@ from data_agent_baseline.agents.model import ModelAdapter, ModelMessage
 from data_agent_baseline.agents.runtime import AgentRunResult, StepRecord
 from data_agent_baseline.benchmark.schema import AnswerTable, PublicTask
 from data_agent_baseline.aop.data_loader import load_records, load_sqlite_sources
+from data_agent_baseline.tools.scan import build_structured_sqlite_database
+
+_LARGE_TABLE_THRESHOLD = 1000
 from data_agent_baseline.aop.dag_executor import DagExecutor
 from data_agent_baseline.aop.operators.link import LinkOperator
 from data_agent_baseline.aop.planner import SemanticPlanner
@@ -55,7 +58,7 @@ class AOPAgent:
 
             # Step 2: Load data records + SQLite source paths
             context_dir = task.task_dir / "context"
-            all_records, sqlite_sources = _collect_sources(context_dir)
+            all_records, sqlite_sources = _collect_sources(context_dir, task=task)
             logger.info("[%s] DATA tables=%s sqlite=%s",
                         tid, {k: len(v) for k, v in all_records.items()}, list(sqlite_sources.keys()))
 
@@ -100,7 +103,7 @@ class AOPAgent:
         )
 
 
-def _collect_sources(context_dir) -> tuple[dict, dict]:
+def _collect_sources(context_dir, task=None) -> tuple[dict, dict]:
     """Return (all_records, sqlite_sources), supporting flat and subdirectory layouts."""
     from pathlib import Path
     context_dir = Path(context_dir)
@@ -116,7 +119,40 @@ def _collect_sources(context_dir) -> tuple[dict, dict]:
     if not all_records and not sqlite_srcs:
         all_records = load_records(context_dir)
         sqlite_srcs = load_sqlite_sources(context_dir)
+    if task is not None:
+        all_records, sqlite_srcs = _migrate_large_to_sqlite(task, all_records, sqlite_srcs)
     return all_records, sqlite_srcs
+
+
+def _migrate_large_to_sqlite(task, all_records: dict, sqlite_srcs: dict) -> tuple[dict, dict]:
+    """Move in-memory tables exceeding _LARGE_TABLE_THRESHOLD rows to a temp SQLite DB."""
+    from pathlib import Path
+    large_keys = [k for k, v in all_records.items() if len(v) > _LARGE_TABLE_THRESHOLD]
+    if not large_keys:
+        return all_records, sqlite_srcs
+
+    large_sources: list[str] = []
+    for key in large_keys:
+        matches = list(task.context_dir.rglob(key))
+        if matches:
+            large_sources.append(matches[0].relative_to(task.context_dir).as_posix())
+
+    if not large_sources:
+        return all_records, sqlite_srcs
+
+    try:
+        scan_result = build_structured_sqlite_database(task, sources=large_sources)
+        db_path = Path(scan_result["path"])
+        new_records = {k: v for k, v in all_records.items() if k not in large_keys}
+        new_sqlite = dict(sqlite_srcs)
+        for tbl in scan_result["tables"]:
+            key = f"{Path(tbl['source_path']).name}::{tbl['table_name']}"
+            new_sqlite[key] = (db_path, tbl["table_name"])
+        logger.info("SCAN migrated large tables to temp SQLite: %s", large_sources)
+        return new_records, new_sqlite
+    except Exception as exc:
+        logger.warning("SCAN migration failed (%s); keeping in-memory records.", exc)
+        return all_records, sqlite_srcs
 
 
 def _make_step(index: int, action: str, action_input: dict, observation: str) -> StepRecord:

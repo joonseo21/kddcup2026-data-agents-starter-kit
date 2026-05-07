@@ -16,6 +16,9 @@ from pathlib import Path
 import pytest
 
 from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
+from data_agent_baseline.tools.filesystem import load_csv_rows, load_document_text, load_json_value
+from data_agent_baseline.tools.retrieve import build_markdown_database, retrieve_by_keyword, search_keyword_database
+from data_agent_baseline.tools.scan import build_structured_sqlite_database
 from data_agent_baseline.tools.registry import ToolExecutionResult, create_default_tool_registry
 
 
@@ -126,6 +129,13 @@ class TestReadCsv:
         with pytest.raises(ValueError, match="escapes"):
             registry.execute(task, "read_csv", {"path": "../../../etc/passwd"})
 
+    def test_loader_returns_all_rows(self, task: PublicTask, ctx: Path):
+        (ctx / "sales.csv").write_text("name,amount\nAlice,100\nBob,200\n")
+        columns, rows = load_csv_rows(task, "sales.csv")
+
+        assert columns == ["name", "amount"]
+        assert rows == [["Alice", "100"], ["Bob", "200"]]
+
 
 # ---------------------------------------------------------------------------
 # read_json
@@ -149,6 +159,12 @@ class TestReadJson:
         assert result.content["truncated"]
         assert len(result.content["preview"]) == 100
 
+    def test_loader_returns_parsed_json(self, task: PublicTask, ctx: Path):
+        (ctx / "config.json").write_text(json.dumps({"key": "value"}))
+
+        result = load_json_value(task, "config.json")
+        assert result == {"key": "value"}
+
 
 # ---------------------------------------------------------------------------
 # read_doc
@@ -170,6 +186,326 @@ class TestReadDoc:
         result = registry.execute(task, "read_doc", {"path": "long.txt", "max_chars": 200})
         assert result.content["truncated"]
         assert len(result.content["preview"]) == 200
+
+    def test_loader_returns_full_text(self, task: PublicTask, ctx: Path):
+        (ctx / "notes.txt").write_text("hello\nworld")
+
+        result = load_document_text(task, "notes.txt")
+        assert result == "hello\nworld"
+
+
+# ---------------------------------------------------------------------------
+# retrieve
+# ---------------------------------------------------------------------------
+
+
+class TestRetrieve:
+    def test_keyword_retrieve_matches_relevant_context(self, task: PublicTask, ctx: Path, registry):
+        (ctx / "news.md").write_text(
+            "China defended their gold medal in the men's team table tennis event."
+        )
+        (ctx / "notes.md").write_text("This file is about weather forecasts.")
+
+        result = registry.execute(
+            task,
+            "retrieve",
+            {
+                "query": "men's team table tennis gold medal",
+                "top_k": 2,
+            },
+        )
+
+        assert result.ok
+        assert result.content["mode"] == "keyword"
+        assert result.content["matches"][0]["path"] == "news.md"
+
+    def test_keyword_retrieve_helper_supports_source_filter(self, task: PublicTask, ctx: Path):
+        (ctx / "keep.md").write_text("Villanova players on the New York Knicks roster.")
+        (ctx / "skip.md").write_text("Completely unrelated content.")
+
+        result = retrieve_by_keyword(
+            task,
+            query="Villanova New York Knicks",
+            sources=["keep.md"],
+            top_k=3,
+        )
+
+        assert result["match_count"] == 1
+        assert result["matches"][0]["path"] == "keep.md"
+
+    def test_build_database_normalizes_markdown_csv_and_json(self, task: PublicTask, ctx: Path, registry):
+        (ctx / "guide.md").write_text("# Title\n\nalpha beta guidance")
+        (ctx / "table.csv").write_text("name,score\nAlice,10\n")
+        (ctx / "records.json").write_text(
+            json.dumps({"table": "Patient", "records": [{"ID": 1, "Diagnosis": "APS"}]})
+        )
+
+        result = registry.execute(
+            task,
+            "build_retrieval_database",
+            {"sources": ["guide.md", "table.csv", "records.json"]},
+        )
+
+        assert result.ok
+        assert result.content["database_type"] == "markdown"
+        assert result.content["record_count"] == 2
+        assert result.content["indexed_paths"] == ["guide.md"]
+        assert {record["record_type"] for record in result.content["records"]} == {"markdown_chunk"}
+
+    def test_retrieve_can_search_prebuilt_database(self, task: PublicTask, ctx: Path, registry):
+        (ctx / "guide.md").write_text("APS guidance for thrombosis follow-up")
+        database = build_markdown_database(task, sources=["guide.md"])
+
+        result = registry.execute(
+            task,
+            "retrieve",
+            {
+                "query": "APS thrombosis guidance",
+                "database": database,
+                "top_k": 2,
+            },
+        )
+
+        assert result.ok
+        assert result.content["matches"][0]["path"] == "guide.md"
+        assert result.content["database_type"] == "markdown"
+
+    def test_search_keyword_database_ranks_structured_records(self):
+        database = {
+            "database_type": "markdown",
+            "record_count": 2,
+            "records": [
+                {
+                    "path": "doc/a.md",
+                    "source_type": "markdown",
+                    "record_type": "markdown_chunk",
+                    "record_id": "doc/a.md#chunk:1",
+                    "text": "alpha beta championship",
+                    "metadata": {},
+                },
+                {
+                    "path": "doc/b.md",
+                    "source_type": "markdown",
+                    "record_type": "markdown_chunk",
+                    "record_id": "doc/b.md#chunk:1",
+                    "text": "weather forecast report",
+                    "metadata": {},
+                },
+            ],
+        }
+
+        result = search_keyword_database(
+            query="alpha championship",
+            database=database,
+            top_k=1,
+        )
+
+        assert result["matches"][0]["path"] == "doc/a.md"
+        assert result["matches"][0]["content"] == "alpha beta championship"
+
+    def test_scan_builds_sqlite_from_structured_sources(self, task: PublicTask, ctx: Path, registry):
+        (ctx / "table.csv").write_text("name,score\nAlice,10\n")
+        (ctx / "records.json").write_text(
+            json.dumps({"table": "Patient", "records": [{"ID": 1, "Diagnosis": "APS"}]})
+        )
+
+        result = registry.execute(
+            task,
+            "scan",
+            {
+                "sources": ["table.csv", "records.json"],
+            },
+        )
+
+        assert result.ok
+        assert result.content["database_type"] == "sqlite"
+        assert result.content["table_count"] == 2
+
+    def test_link_matches_csv_code_to_markdown_document(self, task: PublicTask, ctx: Path, registry):
+        (ctx / "member.csv").write_text(
+            "first_name,last_name,link_to_major\nAngela,Sanders,recxK3MHQFbR9J5uO\n"
+        )
+        (ctx / "major.md").write_text(
+            "The program for Business (Registry ID: recxK3MHQFbR9J5uO) is on the roster."
+        )
+        scan_result = registry.execute(task, "scan", {"sources": ["member.csv"]})
+        table_name = scan_result.content["tables"][0]["table_name"]
+
+        result = registry.execute(
+            task,
+            "link",
+            {
+                "left_db_path": scan_result.content["path"],
+                "left_table": table_name,
+                "right_source": "major.md",
+                "left_field": "link_to_major",
+                "contains": "Angela Sanders",
+                "top_k": 5,
+            },
+        )
+
+        assert result.ok
+        assert result.content["link_count"] >= 1
+        assert result.content["links"][0]["matched_value"] == "recxK3MHQFbR9J5uO"
+        assert result.content["links"][0]["right"]["path"] == "major.md"
+
+    def test_link_matches_csv_code_to_text_document(self, task: PublicTask, ctx: Path, registry):
+        (ctx / "member.csv").write_text(
+            "first_name,last_name,link_to_major\nAngela,Sanders,recxK3MHQFbR9J5uO\n"
+        )
+        (ctx / "major.txt").write_text(
+            "Business program registry id recxK3MHQFbR9J5uO appears in this document."
+        )
+        scan_result = registry.execute(task, "scan", {"sources": ["member.csv"]})
+        table_name = scan_result.content["tables"][0]["table_name"]
+
+        result = registry.execute(
+            task,
+            "link",
+            {
+                "left_db_path": scan_result.content["path"],
+                "left_table": table_name,
+                "right_source": "major.txt",
+                "left_field": "link_to_major",
+                "contains": "Angela Sanders",
+                "top_k": 5,
+            },
+        )
+
+        assert result.ok
+        assert result.content["link_count"] >= 1
+        assert result.content["links"][0]["right"]["path"] == "major.txt"
+
+    def test_link_matches_text_to_markdown(self, task: PublicTask, ctx: Path, registry):
+        (ctx / "major.txt").write_text(
+            "Registry id recxK3MHQFbR9J5uO belongs to the business program."
+        )
+        (ctx / "major.md").write_text(
+            "The Business major uses registry id recxK3MHQFbR9J5uO for catalog tracking."
+        )
+
+        result = registry.execute(
+            task,
+            "link",
+            {
+                "left_source": "major.txt",
+                "right_source": "major.md",
+                "contains": "registry id",
+                "top_k": 5,
+            },
+        )
+
+        assert result.ok
+        assert result.content["link_count"] >= 1
+        assert result.content["links"][0]["left"]["path"] == "major.txt"
+        assert result.content["links"][0]["right"]["path"] == "major.md"
+
+    def test_link_matches_markdown_to_markdown(self, task: PublicTask, ctx: Path, registry):
+        (ctx / "left.md").write_text(
+            "The champion team was China and the registry id was recxK3MHQFbR9J5uO."
+        )
+        (ctx / "right.md").write_text(
+            "China appears again here with registry id recxK3MHQFbR9J5uO in the notes."
+        )
+
+        result = registry.execute(
+            task,
+            "link",
+            {
+                "left_source": "left.md",
+                "right_source": "right.md",
+                "contains": "China",
+                "top_k": 5,
+            },
+        )
+
+        assert result.ok
+        assert result.content["link_count"] >= 1
+        assert result.content["links"][0]["left"]["path"] == "left.md"
+        assert result.content["links"][0]["right"]["path"] == "right.md"
+
+    def test_link_matches_text_to_text(self, task: PublicTask, ctx: Path, registry):
+        (ctx / "left.txt").write_text(
+            "Business uses registry id recxK3MHQFbR9J5uO in this guide."
+        )
+        (ctx / "right.txt").write_text(
+            "The notes mention registry id recxK3MHQFbR9J5uO for the Business program."
+        )
+
+        result = registry.execute(
+            task,
+            "link",
+            {
+                "left_source": "left.txt",
+                "right_source": "right.txt",
+                "contains": "registry id",
+                "top_k": 5,
+            },
+        )
+
+        assert result.ok
+        assert result.content["link_count"] >= 1
+        assert result.content["links"][0]["left"]["path"] == "left.txt"
+        assert result.content["links"][0]["right"]["path"] == "right.txt"
+
+    def test_link_matches_text_to_scanned_table(self, task: PublicTask, ctx: Path, registry):
+        (ctx / "major.txt").write_text(
+            "Business uses registry id recxK3MHQFbR9J5uO in the guide."
+        )
+        (ctx / "major.csv").write_text(
+            "registry_id,major_name\nrecxK3MHQFbR9J5uO,Business\n"
+        )
+        right_scan = registry.execute(task, "scan", {"sources": ["major.csv"]})
+        right_table = right_scan.content["tables"][0]["table_name"]
+
+        result = registry.execute(
+            task,
+            "link",
+            {
+                "left_source": "major.txt",
+                "right_db_path": right_scan.content["path"],
+                "right_table": right_table,
+                "right_field": "registry_id",
+                "contains": "registry id",
+                "top_k": 5,
+            },
+        )
+
+        assert result.ok
+        assert result.content["link_count"] >= 1
+        assert result.content["links"][0]["left"]["path"] == "major.txt"
+        assert result.content["links"][0]["right"]["table_name"] == right_table
+
+    def test_csv_to_sqlite_creates_queryable_database(self, task: PublicTask, ctx: Path):
+        (ctx / "member.csv").write_text("name,score\nAlice,10\nBob,20\n")
+
+        result = build_structured_sqlite_database(task, sources=["member.csv"])
+
+        assert result["table_count"] == 1
+        db_path = Path(result["path"])
+        assert db_path.exists()
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute('SELECT name, score FROM "member" ORDER BY name').fetchall()
+        assert rows == [("Alice", "10"), ("Bob", "20")]
+
+    def test_scan_output_can_be_queried_by_registry_sql_tool(
+        self, task: PublicTask, ctx: Path, registry
+    ):
+        (ctx / "member.csv").write_text("name,score\nAlice,10\nBob,20\n")
+
+        sqlite_result = registry.execute(task, "scan", {"sources": ["member.csv"]})
+        query_result = registry.execute(
+            task,
+            "execute_context_sql",
+            {
+                "path": sqlite_result.content["path"],
+                "sql": 'SELECT name FROM "member" WHERE score = \'20\'',
+            },
+        )
+
+        assert sqlite_result.ok
+        assert query_result.ok
+        assert query_result.content["rows"] == [["Bob"]]
 
 
 # ---------------------------------------------------------------------------
