@@ -35,11 +35,37 @@ class LinkOperator:
     def __init__(self, task_dir: str | Path) -> None:
         self.task_dir = Path(task_dir)
 
-    def execute(self) -> TermContext:
+    def execute(self, query: str = "") -> TermContext:
+        knowledge = (
+            self._read_knowledge_filtered(query)
+            if query
+            else self._read_knowledge()
+        )
         return TermContext(
-            knowledge=self._read_knowledge(),
+            knowledge=knowledge,
             columns=self._extract_columns(),
         )
+
+    def _read_knowledge_filtered(self, query: str, top_k: int = 5) -> str:
+        """Return only the most query-relevant chunks from knowledge.md."""
+        from data_agent_baseline.tools.retrieve import keyword_score
+        from data_agent_baseline.tools.text_utils import split_text_chunks
+
+        raw = self._read_knowledge()
+        if not raw:
+            return ""
+
+        chunks = split_text_chunks(raw)
+        if not chunks:
+            return raw
+
+        scored = sorted(
+            ((keyword_score(query, chunk), chunk) for chunk in chunks),
+            key=lambda x: x[0],
+            reverse=True,
+        )
+        relevant = [chunk for score, chunk in scored[:top_k] if score > 0]
+        return "\n\n".join(relevant) if relevant else raw
 
     def _read_knowledge(self) -> str:
         for candidate in [

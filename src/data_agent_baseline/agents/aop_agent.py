@@ -51,7 +51,7 @@ class AOPAgent:
 
         try:
             # Step 1: Link — read knowledge.md + column names
-            term_context = LinkOperator(task.task_dir).execute()
+            term_context = LinkOperator(task.task_dir).execute(query=task.question)
             logger.info("[%s] LINK knowledge=%d chars files=%s",
                         tid, len(term_context.knowledge), list(term_context.columns.keys()))
             steps.append(_make_step(0, "link", {"task_dir": str(task.task_dir)}, term_context.as_context_string()))
