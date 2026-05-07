@@ -79,11 +79,10 @@ class SemanticPlanner:
         """
         sqlite_sources = sqlite_sources or {}
         tables = list(all_records_data.keys())
-        sqlite_keys = list(sqlite_sources.keys())
-        prompt = self._build_prompt(query, tables, term_context, sqlite_keys)
-        logger.debug("[PLANNER] prompt (%d chars):\n%s", len(prompt), prompt)
+        prompt = self._build_prompt(query, tables, term_context, sqlite_sources)
+        logger.info("[PLANNER] prompt (%d chars):\n%s", len(prompt), prompt)
         response = llm_fn(prompt)
-        logger.debug("[PLANNER] llm_response:\n%s", response)
+        logger.info("[PLANNER] llm_response:\n%s", response)
         steps = self._parse_plan(response)
         logger.info("[PLANNER] parsed steps: %s", [s["op"] for s in steps])
         return self._steps_to_dag(steps, all_records_data, sqlite_sources)
@@ -93,7 +92,7 @@ class SemanticPlanner:
         query: str,
         tables: list[str],
         term_context: TermContext | None = None,
-        sqlite_table_keys: list[str] | None = None,
+        sqlite_sources: dict[str, tuple[Path, str]] | None = None,
     ) -> str:
         """LLM에게 전달할 계획 요청 프롬프트 생성."""
         if term_context:
@@ -101,7 +100,11 @@ class SemanticPlanner:
             context_block = f"\n{ctx_str}\n" if ctx_str else ""
         else:
             context_block = ""
-        sqlite_tables_str = ", ".join(sqlite_table_keys) if sqlite_table_keys else "(none)"
+        sqlite_sources = sqlite_sources or {}
+        sqlite_tables_str = ", ".join(sqlite_sources.keys()) if sqlite_sources else "(none)"
+        sqlite_col_lines = _sqlite_column_lines(sqlite_sources)
+        if sqlite_col_lines:
+            context_block += sqlite_col_lines
         return PLAN_PROMPT_TEMPLATE.format(
             context=context_block,
             tables=", ".join(tables) if tables else "(none)",
@@ -267,3 +270,21 @@ class SemanticPlanner:
             return all_records_data[stem]
 
         return []
+
+
+def _sqlite_column_lines(sqlite_sources: dict[str, tuple[Path, str]]) -> str:
+    """SQLite 소스의 컬럼명을 쿼리해 Available Columns 형식 문자열로 반환."""
+    import sqlite3
+    lines: list[str] = []
+    for key, (db_path, table_name) in sqlite_sources.items():
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.execute(f'PRAGMA table_info("{table_name}")')
+                cols = [row[1] for row in cursor.fetchall()]
+            if cols:
+                lines.append(f"  {key}: {', '.join(cols)}")
+        except Exception:
+            pass
+    if not lines:
+        return ""
+    return "\n=== SQLite Table Columns ===\n" + "\n".join(lines) + "\n"

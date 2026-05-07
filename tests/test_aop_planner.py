@@ -261,7 +261,7 @@ class TestSqliteFilterPlan:
 
     def test_prompt_contains_sqlite_table_key(self, planner, sqlite_sources):
         prompt = planner._build_prompt(
-            "find high scores", [], None, list(sqlite_sources.keys())
+            "find high scores", [], None, sqlite_sources
         )
         assert "results.db::results" in prompt
 
