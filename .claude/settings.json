@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(wc -l /home/joonseo2012/kddcup2026-data-agents-starter-kit/src/data_agent_baseline/**/*.py)"
+      "Bash(wc -l /home/joonseo2012/kddcup2026-data-agents-starter-kit/src/data_agent_baseline/**/*.py)",
+      "Read(//home/joonseo2012/.ssh/**)",
+      "Bash(mkdir -p /home/joonseo2012/kddcup2026-data-agents-starter-kit/src/data_agent_baseline/aop/operators)",
+      "Bash(mkdir -p /home/joonseo2012/kddcup2026-data-agents-starter-kit/src/data_agent_baseline/aop/logical_representations)",
+      "Bash(git commit -m ' *)",
+      "Bash(uv run *)"
     ]
   }
 }

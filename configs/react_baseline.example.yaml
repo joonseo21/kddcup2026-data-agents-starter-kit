@@ -9,11 +9,12 @@ dataset:
 #   temperature: 0.0
 
 agent:
-  model: llama3.1:8b
-  api_base: http://localhost:11434/v1
-  api_key: ollama        # 아무 값이나 OK
+  model: qwen3.5:35b-a3b
+  api_base: "http://localhost:11434/v1"
+  api_key: "ollama"
   max_steps: 16
   temperature: 0.0
+  agent_type: aop
 
 run:
   output_dir: artifacts/runs

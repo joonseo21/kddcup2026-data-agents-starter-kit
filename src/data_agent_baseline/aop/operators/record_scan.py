@@ -20,9 +20,14 @@ class RecordScanOp:
         if not self.condition:
             return list(self.records)
 
+        # 프롬프트에 예시 열 및 샘플 레코드 추가
+        columns = list(self.records[0].keys()) if self.records else []
+        sample = self.records[:3]
         prompt = (
             f'Parse the filter condition into JSON.\n'
             f'Condition: "{self.condition}"\n'
+            f'Available columns: {columns}\n'
+            f'Sample rows: {sample}\n'
             f'Return ONLY: {{"field": "...", "op": "= | != | > | < | >= | <=", "value": "..."}}'
         )
         raw = llm_fn(prompt)
