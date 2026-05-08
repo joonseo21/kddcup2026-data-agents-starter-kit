@@ -36,11 +36,12 @@ class LinkOperator:
         self.task_dir = Path(task_dir)
 
     def execute(self, query: str = "") -> TermContext:
-        knowledge = (
-            self._read_knowledge_filtered(query)
-            if query
-            else self._read_knowledge()
-        )
+        # knowledge = (
+        #     self._read_knowledge_filtered(query)
+        #     if query
+        #     else self._read_knowledge()
+        # )
+        knowledge = self._read_knowledge()
         return TermContext(
             knowledge=knowledge,
             columns=self._extract_columns(),

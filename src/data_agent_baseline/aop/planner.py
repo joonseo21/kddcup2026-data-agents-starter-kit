@@ -80,7 +80,7 @@ class SemanticPlanner:
         sqlite_sources = sqlite_sources or {}
         tables = list(all_records_data.keys())
         prompt = self._build_prompt(query, tables, term_context, sqlite_sources)
-        logger.info("[PLANNER] prompt (%d chars):\n%s", len(prompt), prompt)
+        logger.debug("[PLANNER] prompt (%d chars):\n%s", len(prompt), prompt)
         response = llm_fn(prompt)
         logger.info("[PLANNER] llm_response:\n%s", response)
         steps = self._parse_plan(response)
@@ -174,7 +174,10 @@ class SemanticPlanner:
                 else:
                     left_node = self._make_source_node(left_src, all_records_data, sqlite_sources)
 
-                right_node = self._make_source_node(right_src, all_records_data, sqlite_sources)
+                if right_src == "prev" and prev_node is not None:
+                    right_node = prev_node
+                else:
+                    right_node = self._make_source_node(right_src, all_records_data, sqlite_sources)
 
                 node = DagNode(
                     op_type="Join",
@@ -241,7 +244,7 @@ class SemanticPlanner:
         # LLM이 "Patient.json" 처럼 파일명만 쓴 경우, "Patient.json::*" 키로 fallback
         src_prefix = src.split("::")[0]  # already-qualified keys pass through
         for key, (db_path, table_name) in sqlite_sources.items():
-            if key.startswith(src_prefix + "::") or key.startswith(src + "::"):
+            if (key.startswith(src_prefix + "::") or key.startswith(src + "::") or table_name == src):
                 return DagNode(
                     op_type="SqliteFilter",
                     params={"db_path": db_path, "table": table_name, "condition": ""},

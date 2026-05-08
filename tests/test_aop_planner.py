@@ -154,6 +154,48 @@ class TestStepsToDag:
         with pytest.raises(ValueError, match="비어있음"):
             planner._steps_to_dag([], sample_records, {})
 
+    def test_join_right_prev_uses_prev_node(self, planner, sample_records):
+        """Join right='prev'이면 이전 step의 노드를 right child로 사용해야 함."""
+        steps = [
+            {"op": "RecordScan", "params": {"table": "Examination.json", "condition": "Thrombosis equals 2"}},
+            {"op": "Join", "params": {"left": "Patient.json", "right": "prev", "left_key": "ID", "right_key": "ID"}},
+        ]
+        node = planner._steps_to_dag(steps, sample_records, {})
+        assert node.op_type == "Join"
+        left_child, right_child = node.children
+        assert left_child.op_type == "RecordScan"
+        assert left_child.params["records"] == sample_records["Patient.json"]
+        # right=prev → Examination.json RecordScan (step 1의 prev_node)
+        assert right_child.op_type == "RecordScan"
+        assert right_child.params["condition"] == "Thrombosis equals 2"
+
+    def test_join_right_prev_with_sqlite_filter(self, planner, sample_records):
+        """SqliteFilter → Join(left=table, right=prev) 패턴 — task_19 실제 LLM 계획."""
+        import sqlite3, tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "zip.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("CREATE TABLE zip_code (zip_code TEXT, state TEXT)")
+                conn.execute("INSERT INTO zip_code VALUES ('60559', 'IL')")
+                conn.commit()
+
+            sqlite_sources = {"zip_code.json::zip_code": (db_path, "zip_code")}
+            steps = [
+                {"op": "SqliteFilter", "params": {"table": "zip_code.json::zip_code", "condition": "state equals Illinois"}},
+                {"op": "Join", "params": {"left": "Examination.json", "right": "prev", "left_key": "ID", "right_key": "zip_code"}},
+                {"op": "Extract", "params": {"columns": ["ID"]}},
+            ]
+            node = planner._steps_to_dag(steps, sample_records, sqlite_sources)
+            join_node = node.children[0]
+            assert join_node.op_type == "Join"
+            left_child, right_child = join_node.children
+            assert left_child.op_type == "RecordScan"
+            # right=prev → SqliteFilter (step 1의 prev_node)
+            assert right_child.op_type == "SqliteFilter"
+            assert right_child.params["condition"] == "state equals Illinois"
+
 
 # ---------------------------------------------------------------------------
 # plan() — Task 11 전체 파이프라인
