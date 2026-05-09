@@ -84,7 +84,9 @@ class ReActAgent:
         self.config = config or ReActAgentConfig()
         self.system_prompt = system_prompt or REACT_SYSTEM_PROMPT
 
-    def _build_messages(self, task: PublicTask, state: AgentRuntimeState, prescan_result: dict | None = None) -> list[ModelMessage]:
+    def _build_messages(
+        self, task: PublicTask, state: AgentRuntimeState, prescan_result: dict | None = None
+    ) -> list[ModelMessage]:
         system_content = build_system_prompt(
             self.tools.describe_for_prompt(),
             system_prompt=self.system_prompt,
@@ -99,10 +101,19 @@ class ReActAgent:
         return messages
 
     def run(self, task: PublicTask) -> AgentRunResult:
-        # CSV/JSON 파일이 있으면 루프 시작 전 미리 scan → 스키마를 task prompt에 주입
+        # task 범위 캐시 — run() 종료 시 자동 소멸, 태스크 간 오염 없음
+        task_scan_cache: dict[str, dict] = {}
+
+        def _scan_with_cache(sources: list[str] | None) -> dict:
+            key = ",".join(sorted(sources)) if sources else "__all__"
+            if key not in task_scan_cache:
+                task_scan_cache[key] = scan_sources(task, sources=sources)
+            return task_scan_cache[key]
+
+        # 루프 시작 전 pre-scan → 스키마를 task prompt에 주입
         prescan_result: dict | None = None
         try:
-            prescan_result = scan_sources(task, sources=None)
+            prescan_result = _scan_with_cache(None)
             logger.info(
                 "pre-scan complete for %s: %d table(s) at %s",
                 task.task_id,
