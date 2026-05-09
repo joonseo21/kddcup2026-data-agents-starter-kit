@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 
@@ -14,6 +15,9 @@ from data_agent_baseline.agents.prompt import (
 from data_agent_baseline.agents.runtime import AgentRunResult, AgentRuntimeState, StepRecord
 from data_agent_baseline.benchmark.schema import PublicTask
 from data_agent_baseline.tools.registry import ToolRegistry
+from data_agent_baseline.tools.scan import scan_sources
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,13 +84,13 @@ class ReActAgent:
         self.config = config or ReActAgentConfig()
         self.system_prompt = system_prompt or REACT_SYSTEM_PROMPT
 
-    def _build_messages(self, task: PublicTask, state: AgentRuntimeState) -> list[ModelMessage]:
+    def _build_messages(self, task: PublicTask, state: AgentRuntimeState, prescan_result: dict | None = None) -> list[ModelMessage]:
         system_content = build_system_prompt(
             self.tools.describe_for_prompt(),
             system_prompt=self.system_prompt,
         )
         messages = [ModelMessage(role="system", content=system_content)]
-        messages.append(ModelMessage(role="user", content=build_task_prompt(task)))
+        messages.append(ModelMessage(role="user", content=build_task_prompt(task, prescan_result)))
         for step in state.steps:
             messages.append(ModelMessage(role="assistant", content=step.raw_response))
             messages.append(
@@ -95,9 +99,23 @@ class ReActAgent:
         return messages
 
     def run(self, task: PublicTask) -> AgentRunResult:
+        # CSV/JSON 파일이 있으면 루프 시작 전 미리 scan → 스키마를 task prompt에 주입
+        prescan_result: dict | None = None
+        try:
+            prescan_result = scan_sources(task, sources=None)
+            logger.info(
+                "pre-scan complete for %s: %d table(s) at %s",
+                task.task_id,
+                prescan_result.get("table_count", 0),
+                prescan_result.get("path"),
+            )
+        except Exception as exc:
+            # structured 파일이 없는 태스크는 정상 — prescan_result = None 유지
+            logger.debug("pre-scan skipped for %s: %s", task.task_id, exc)
+
         state = AgentRuntimeState()
         for step_index in range(1, self.config.max_steps + 1):
-            raw_response = self.model.complete(self._build_messages(task, state))
+            raw_response = self.model.complete(self._build_messages(task, state, prescan_result))
             try:
                 model_step = parse_model_step(raw_response)
                 tool_result = self.tools.execute(task, model_step.action, model_step.action_input)

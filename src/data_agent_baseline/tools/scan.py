@@ -179,6 +179,9 @@ def build_structured_sqlite_database(
     }
 
 
+_scan_cache: dict[str, dict[str, Any]] = {}
+
+
 def scan_sources(
     task: PublicTask,
     *,
@@ -186,4 +189,10 @@ def scan_sources(
 ) -> dict[str, Any]:
     # Scan operator 진입점
     # structured data -> 임시 SQLite DB
-    return build_structured_sqlite_database(task, sources=sources)
+    # 같은 task + sources 조합은 캐싱하여 재사용
+    cache_key = f"{task.task_id}::{','.join(sorted(sources)) if sources else '__all__'}"
+    if cache_key in _scan_cache:
+        return _scan_cache[cache_key]
+    result = build_structured_sqlite_database(task, sources=sources)
+    _scan_cache[cache_key] = result
+    return result
